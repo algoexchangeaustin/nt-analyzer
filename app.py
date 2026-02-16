@@ -47,6 +47,25 @@ st.markdown("""
     .summary-row:last-child { border-bottom: none; }
     .summary-key { color: #8a8aa3; font-size: 0.88rem; }
     .summary-val { color: #ffffff; font-size: 0.88rem; font-weight: 600; }
+    .tooltip-wrap { position: relative; cursor: help; }
+    .tooltip-wrap .tooltip-text {
+        visibility: hidden;
+        background: #2d2d44;
+        color: #fff;
+        text-align: center;
+        border-radius: 6px;
+        padding: 5px 10px;
+        position: absolute;
+        z-index: 10;
+        bottom: 125%;
+        left: 50%;
+        transform: translateX(-50%);
+        white-space: nowrap;
+        font-size: 0.78rem;
+        font-weight: 500;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+    }
+    .tooltip-wrap:hover .tooltip-text { visibility: visible; }
 
     /* Monthly returns table */
     .monthly-table { border-collapse: collapse; width: 100%; font-size: 0.82rem; }
@@ -108,22 +127,27 @@ def load_csv(uploaded_file):
     return df
 
 
-def compute_metrics(df):
+def compute_metrics(df, starting_capital=100_000):
     """Return a dict of key performance metrics from a trades DataFrame."""
     trades = df.sort_values("ExitTime").reset_index(drop=True)
     cum = trades["PnL"].cumsum()
     total_pnl = cum.iloc[-1] if len(cum) else 0.0
 
-    # Drawdown series
+    # Drawdown series (dollar)
     peak = cum.cummax()
     dd = cum - peak
     max_dd = dd.min() if len(dd) else 0.0
+
+    # Drawdown series (% of equity = capital + cumulative P&L)
+    equity = starting_capital + cum
+    equity_peak = equity.cummax()
+    dd_pct = (equity - equity_peak) / equity_peak * 100
+    max_dd_pct = dd_pct.min() if len(dd_pct) else 0.0
 
     # CAGR
     start = trades["ExitTime"].iloc[0]
     end = trades["ExitTime"].iloc[-1]
     years = max((end - start).days / 365.25, 1 / 365.25)
-    starting_capital = 100_000  # assumed starting capital for CAGR calc
     cagr = ((starting_capital + total_pnl) / starting_capital) ** (1 / years) - 1
 
     # Win rate
@@ -142,8 +166,10 @@ def compute_metrics(df):
 
     return {
         "total_pnl": total_pnl,
+        "starting_capital": starting_capital,
         "cagr": cagr,
         "max_dd": max_dd,
+        "max_dd_pct": max_dd_pct,
         "n_trades": n_trades,
         "wins": wins,
         "win_rate": win_rate,
@@ -153,6 +179,7 @@ def compute_metrics(df):
         "total_months": len(monthly),
         "cum_series": cum,
         "dd_series": dd,
+        "dd_pct_series": dd_pct,
         "exit_times": trades["ExitTime"],
     }
 
@@ -191,8 +218,17 @@ def render_monthly_html(pivot):
     return f'<table class="monthly-table">{header}{"".join(rows)}</table>'
 
 
-def metric_card(label, value, color=""):
+def metric_card(label, value, color="", tooltip=""):
     cls = f" {color}" if color else ""
+    if tooltip:
+        return f"""
+        <div class="metric-card">
+            <div class="metric-label">{label}</div>
+            <div class="tooltip-wrap">
+                <div class="metric-value{cls}">{value}</div>
+                <span class="tooltip-text">{tooltip}</span>
+            </div>
+        </div>"""
     return f"""
     <div class="metric-card">
         <div class="metric-label">{label}</div>
@@ -215,14 +251,21 @@ if not uploaded_files:
     st.info("Upload one or more NinjaTrader backtest CSVs to get started.")
     st.stop()
 
-# Parse all uploads
+# Parse all uploads and collect capital inputs
 all_dfs = {}
+capital_map = {}
 for f in uploaded_files:
     df = load_csv(f)
-    # Use Strategy column if available, else filename
     strat_name = df["Strategy"].iloc[0] if "Strategy" in df.columns else f.name.replace(".csv", "")
     label = f"{strat_name} ({f.name})"
     all_dfs[label] = df
+    capital_map[label] = st.number_input(
+        f"Initial Capital — {strat_name}",
+        min_value=0,
+        value=100_000,
+        step=5_000,
+        key=f"cap_{f.name}",
+    )
 
 # Sidebar — strategy selection
 st.sidebar.header("Strategy Selection")
@@ -239,23 +282,24 @@ if not selected:
 # Combine selected
 combined = pd.concat([all_dfs[s] for s in selected], ignore_index=True)
 combined = combined.sort_values("ExitTime").reset_index(drop=True)
+total_capital = sum(capital_map[s] for s in selected)
 
-m = compute_metrics(combined)
+m = compute_metrics(combined, starting_capital=total_capital)
 
 # ---------------------------------------------------------------------------
 # Metric cards row
 # ---------------------------------------------------------------------------
 cols = st.columns(6)
 cards = [
-    ("Annual Return (CAGR)", f"{m['cagr']:.1%}", "green" if m["cagr"] >= 0 else "red"),
-    ("Max Drawdown", f"${m['max_dd']:,.0f}", "red"),
-    ("Num Trades", f"{m['n_trades']:,}", ""),
-    ("Win Rate", f"{m['win_rate']:.1%}", "green" if m["win_rate"] >= 0.5 else "red"),
-    ("Win Months", f"{m['win_months_pct']:.0%}", "green" if m["win_months_pct"] >= 0.5 else "red"),
-    ("Profit Factor", f"{m['profit_factor']:.2f}" if m["profit_factor"] != float("inf") else "∞", "green"),
+    ("Annual Return (CAGR)", f"{m['cagr']:.1%}", "green" if m["cagr"] >= 0 else "red", ""),
+    ("Max Drawdown", f"{m['max_dd_pct']:.1f}%", "red", f"${m['max_dd']:,.0f}"),
+    ("Num Trades", f"{m['n_trades']:,}", "", ""),
+    ("Win Rate", f"{m['win_rate']:.1%}", "green" if m["win_rate"] >= 0.5 else "red", ""),
+    ("Win Months", f"{m['win_months_pct']:.0%}", "green" if m["win_months_pct"] >= 0.5 else "red", ""),
+    ("Profit Factor", f"{m['profit_factor']:.2f}" if m["profit_factor"] != float("inf") else "∞", "green", ""),
 ]
-for col, (label, value, color) in zip(cols, cards):
-    col.markdown(metric_card(label, value, color), unsafe_allow_html=True)
+for col, (label, value, color, tip) in zip(cols, cards):
+    col.markdown(metric_card(label, value, color, tooltip=tip), unsafe_allow_html=True)
 
 st.markdown("<br>", unsafe_allow_html=True)
 
@@ -289,32 +333,34 @@ with chart_col:
     )
     st.plotly_chart(fig_eq, use_container_width=True)
 
-    # Drawdown chart
+    # Drawdown chart (% with $ in hover)
     fig_dd = go.Figure()
     fig_dd.add_trace(go.Scatter(
         x=m["exit_times"],
-        y=m["dd_series"],
+        y=m["dd_pct_series"],
         fill="tozeroy",
         fillcolor="rgba(255,82,82,0.18)",
         line=dict(color="#ff5252", width=1.5),
         name="Drawdown",
+        customdata=m["dd_series"],
+        hovertemplate="%{y:.1f}%<br>$%{customdata:,.0f}<extra></extra>",
     ))
     fig_dd.update_layout(
         title="Drawdown",
         template="plotly_dark",
         paper_bgcolor="#0e0e1a",
         plot_bgcolor="#0e0e1a",
-        yaxis_title="Drawdown ($)",
+        yaxis_title="Drawdown (%)",
         xaxis_title="",
         height=250,
         margin=dict(l=60, r=20, t=45, b=30),
-        yaxis=dict(tickformat="$,.0f", gridcolor="#1e1e2f"),
+        yaxis=dict(ticksuffix="%", gridcolor="#1e1e2f"),
         xaxis=dict(gridcolor="#1e1e2f"),
     )
     st.plotly_chart(fig_dd, use_container_width=True)
 
 with summary_col:
-    suggested_capital = abs(m["max_dd"]) * 2
+    suggested_capital = total_capital + abs(m["max_dd"]) * 2
     summary_items = [
         ("Number of Trades", f"{m['n_trades']:,}"),
         ("Suggested Min Capital", f"${suggested_capital:,.0f}"),
@@ -322,7 +368,7 @@ with summary_col:
         ("Profitable Trades", f"{m['wins']:,}"),
         ("Months Profitable", f"{m['months_profitable']} / {m['total_months']}"),
         ("Total Net Profit", f"${m['total_pnl']:,.0f}"),
-        ("Max Drawdown", f"${m['max_dd']:,.0f}"),
+        ("Max Drawdown", f"{m['max_dd_pct']:.1f}% (${m['max_dd']:,.0f})"),
         ("Profit Factor", f"{m['profit_factor']:.2f}" if m["profit_factor"] != float("inf") else "∞"),
     ]
     rows_html = "".join(
