@@ -1,0 +1,340 @@
+import streamlit as st
+import pandas as pd
+import plotly.graph_objects as go
+import calendar
+import re
+
+st.set_page_config(page_title="NinjaTrader Backtest Analyzer", layout="wide")
+
+# ---------------------------------------------------------------------------
+# Custom CSS
+# ---------------------------------------------------------------------------
+st.markdown("""
+<style>
+    .metric-card {
+        background: #1e1e2f;
+        border-radius: 12px;
+        padding: 18px 20px;
+        text-align: center;
+        border: 1px solid #2d2d44;
+    }
+    .metric-label {
+        color: #8a8aa3;
+        font-size: 0.78rem;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        margin-bottom: 4px;
+    }
+    .metric-value {
+        color: #ffffff;
+        font-size: 1.55rem;
+        font-weight: 700;
+    }
+    .metric-value.green { color: #00c853; }
+    .metric-value.red   { color: #ff5252; }
+    .summary-card {
+        background: #1e1e2f;
+        border-radius: 12px;
+        padding: 20px 24px;
+        border: 1px solid #2d2d44;
+    }
+    .summary-row {
+        display: flex;
+        justify-content: space-between;
+        padding: 8px 0;
+        border-bottom: 1px solid #2d2d44;
+    }
+    .summary-row:last-child { border-bottom: none; }
+    .summary-key { color: #8a8aa3; font-size: 0.88rem; }
+    .summary-val { color: #ffffff; font-size: 0.88rem; font-weight: 600; }
+
+    /* Monthly returns table */
+    .monthly-table { border-collapse: collapse; width: 100%; font-size: 0.82rem; }
+    .monthly-table th {
+        background: #1e1e2f;
+        color: #8a8aa3;
+        padding: 8px 6px;
+        text-align: center;
+        font-weight: 600;
+        border: 1px solid #2d2d44;
+    }
+    .monthly-table td {
+        padding: 7px 6px;
+        text-align: center;
+        border: 1px solid #2d2d44;
+        font-weight: 500;
+    }
+    .monthly-table .pos { background: #0d3320; color: #00c853; }
+    .monthly-table .neg { background: #3b1010; color: #ff5252; }
+    .monthly-table .zero { background: #1a1a2e; color: #8a8aa3; }
+    .monthly-table .year-cell {
+        background: #1e1e2f;
+        color: #ffffff;
+        font-weight: 700;
+        text-align: left;
+        padding-left: 12px;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+def parse_profit(val):
+    """Parse NinjaTrader profit strings like '$558.00' or '($119.00)'."""
+    if pd.isna(val):
+        return 0.0
+    s = str(val).strip()
+    negative = "(" in s
+    s = re.sub(r"[$(,)]", "", s)
+    try:
+        v = float(s)
+    except ValueError:
+        return 0.0
+    return -v if negative else v
+
+
+def load_csv(uploaded_file):
+    """Read a NinjaTrader backtest CSV and return a cleaned DataFrame."""
+    df = pd.read_csv(uploaded_file)
+    # Drop fully-empty trailing column (NinjaTrader CSVs have a trailing comma)
+    df = df.loc[:, ~df.columns.str.match(r"^Unnamed")]
+    df.columns = df.columns.str.strip()
+
+    df["PnL"] = df["Profit"].apply(parse_profit)
+    df["ExitTime"] = pd.to_datetime(df["Exit time"], format="mixed", dayfirst=False)
+    df["EntryTime"] = pd.to_datetime(df["Entry time"], format="mixed", dayfirst=False)
+    return df
+
+
+def compute_metrics(df):
+    """Return a dict of key performance metrics from a trades DataFrame."""
+    trades = df.sort_values("ExitTime").reset_index(drop=True)
+    cum = trades["PnL"].cumsum()
+    total_pnl = cum.iloc[-1] if len(cum) else 0.0
+
+    # Drawdown series
+    peak = cum.cummax()
+    dd = cum - peak
+    max_dd = dd.min() if len(dd) else 0.0
+
+    # CAGR
+    start = trades["ExitTime"].iloc[0]
+    end = trades["ExitTime"].iloc[-1]
+    years = max((end - start).days / 365.25, 1 / 365.25)
+    starting_capital = 100_000  # assumed starting capital for CAGR calc
+    cagr = ((starting_capital + total_pnl) / starting_capital) ** (1 / years) - 1
+
+    # Win rate
+    n_trades = len(trades)
+    wins = (trades["PnL"] > 0).sum()
+    win_rate = wins / n_trades if n_trades else 0
+
+    # Profit factor
+    gross_profit = trades.loc[trades["PnL"] > 0, "PnL"].sum()
+    gross_loss = abs(trades.loc[trades["PnL"] < 0, "PnL"].sum())
+    profit_factor = gross_profit / gross_loss if gross_loss else float("inf")
+
+    # Win months
+    monthly = trades.set_index("ExitTime")["PnL"].resample("ME").sum()
+    win_months_pct = (monthly > 0).sum() / len(monthly) if len(monthly) else 0
+
+    return {
+        "total_pnl": total_pnl,
+        "cagr": cagr,
+        "max_dd": max_dd,
+        "n_trades": n_trades,
+        "wins": wins,
+        "win_rate": win_rate,
+        "profit_factor": profit_factor,
+        "win_months_pct": win_months_pct,
+        "months_profitable": int((monthly > 0).sum()) if len(monthly) else 0,
+        "total_months": len(monthly),
+        "cum_series": cum,
+        "dd_series": dd,
+        "exit_times": trades["ExitTime"],
+    }
+
+
+def monthly_returns_table(df):
+    """Build a pivot DataFrame of monthly PnL: rows=year, cols=month."""
+    trades = df.sort_values("ExitTime").copy()
+    trades["Year"] = trades["ExitTime"].dt.year
+    trades["Month"] = trades["ExitTime"].dt.month
+    pivot = trades.groupby(["Year", "Month"])["PnL"].sum().unstack(fill_value=0)
+    # Ensure all 12 months present
+    for m in range(1, 13):
+        if m not in pivot.columns:
+            pivot[m] = 0.0
+    pivot = pivot[sorted(pivot.columns)]
+    pivot["YTD"] = pivot.sum(axis=1)
+    return pivot
+
+
+def render_monthly_html(pivot):
+    """Convert monthly returns pivot to a styled HTML table."""
+    month_names = [calendar.month_abbr[m].upper() for m in range(1, 13)] + ["YTD"]
+    header = "<tr><th>YEAR</th>" + "".join(f"<th>{m}</th>" for m in month_names) + "</tr>"
+    rows = []
+    for year, row in pivot.iterrows():
+        cells = f'<td class="year-cell">{year}</td>'
+        for col in row:
+            if col > 0:
+                cls = "pos"
+            elif col < 0:
+                cls = "neg"
+            else:
+                cls = "zero"
+            cells += f'<td class="{cls}">${col:,.0f}</td>'
+        rows.append(f"<tr>{cells}</tr>")
+    return f'<table class="monthly-table">{header}{"".join(rows)}</table>'
+
+
+def metric_card(label, value, color=""):
+    cls = f" {color}" if color else ""
+    return f"""
+    <div class="metric-card">
+        <div class="metric-label">{label}</div>
+        <div class="metric-value{cls}">{value}</div>
+    </div>"""
+
+
+# ---------------------------------------------------------------------------
+# App layout
+# ---------------------------------------------------------------------------
+st.markdown("## NinjaTrader Backtest Analyzer")
+
+uploaded_files = st.file_uploader(
+    "Upload NinjaTrader backtest CSV(s)",
+    type=["csv"],
+    accept_multiple_files=True,
+)
+
+if not uploaded_files:
+    st.info("Upload one or more NinjaTrader backtest CSVs to get started.")
+    st.stop()
+
+# Parse all uploads
+all_dfs = {}
+for f in uploaded_files:
+    df = load_csv(f)
+    # Use Strategy column if available, else filename
+    strat_name = df["Strategy"].iloc[0] if "Strategy" in df.columns else f.name.replace(".csv", "")
+    label = f"{strat_name} ({f.name})"
+    all_dfs[label] = df
+
+# Sidebar — strategy selection
+st.sidebar.header("Strategy Selection")
+selected = st.sidebar.multiselect(
+    "Include strategies:",
+    options=list(all_dfs.keys()),
+    default=list(all_dfs.keys()),
+)
+
+if not selected:
+    st.warning("Select at least one strategy.")
+    st.stop()
+
+# Combine selected
+combined = pd.concat([all_dfs[s] for s in selected], ignore_index=True)
+combined = combined.sort_values("ExitTime").reset_index(drop=True)
+
+m = compute_metrics(combined)
+
+# ---------------------------------------------------------------------------
+# Metric cards row
+# ---------------------------------------------------------------------------
+cols = st.columns(6)
+cards = [
+    ("Annual Return (CAGR)", f"{m['cagr']:.1%}", "green" if m["cagr"] >= 0 else "red"),
+    ("Max Drawdown", f"${m['max_dd']:,.0f}", "red"),
+    ("Num Trades", f"{m['n_trades']:,}", ""),
+    ("Win Rate", f"{m['win_rate']:.1%}", "green" if m["win_rate"] >= 0.5 else "red"),
+    ("Win Months", f"{m['win_months_pct']:.0%}", "green" if m["win_months_pct"] >= 0.5 else "red"),
+    ("Profit Factor", f"{m['profit_factor']:.2f}" if m["profit_factor"] != float("inf") else "∞", "green"),
+]
+for col, (label, value, color) in zip(cols, cards):
+    col.markdown(metric_card(label, value, color), unsafe_allow_html=True)
+
+st.markdown("<br>", unsafe_allow_html=True)
+
+# ---------------------------------------------------------------------------
+# Main content: Equity curve + Summary | Drawdown
+# ---------------------------------------------------------------------------
+chart_col, summary_col = st.columns([3, 1])
+
+with chart_col:
+    # Equity curve
+    fig_eq = go.Figure()
+    fig_eq.add_trace(go.Scatter(
+        x=m["exit_times"],
+        y=m["cum_series"],
+        fill="tozeroy",
+        fillcolor="rgba(0,200,83,0.15)",
+        line=dict(color="#00c853", width=2),
+        name="Equity",
+    ))
+    fig_eq.update_layout(
+        title="Equity Curve",
+        template="plotly_dark",
+        paper_bgcolor="#0e0e1a",
+        plot_bgcolor="#0e0e1a",
+        yaxis_title="Cumulative P&L ($)",
+        xaxis_title="",
+        height=370,
+        margin=dict(l=60, r=20, t=45, b=30),
+        yaxis=dict(tickformat="$,.0f", gridcolor="#1e1e2f"),
+        xaxis=dict(gridcolor="#1e1e2f"),
+    )
+    st.plotly_chart(fig_eq, use_container_width=True)
+
+    # Drawdown chart
+    fig_dd = go.Figure()
+    fig_dd.add_trace(go.Scatter(
+        x=m["exit_times"],
+        y=m["dd_series"],
+        fill="tozeroy",
+        fillcolor="rgba(255,82,82,0.18)",
+        line=dict(color="#ff5252", width=1.5),
+        name="Drawdown",
+    ))
+    fig_dd.update_layout(
+        title="Drawdown",
+        template="plotly_dark",
+        paper_bgcolor="#0e0e1a",
+        plot_bgcolor="#0e0e1a",
+        yaxis_title="Drawdown ($)",
+        xaxis_title="",
+        height=250,
+        margin=dict(l=60, r=20, t=45, b=30),
+        yaxis=dict(tickformat="$,.0f", gridcolor="#1e1e2f"),
+        xaxis=dict(gridcolor="#1e1e2f"),
+    )
+    st.plotly_chart(fig_dd, use_container_width=True)
+
+with summary_col:
+    suggested_capital = abs(m["max_dd"]) * 2
+    summary_items = [
+        ("Number of Trades", f"{m['n_trades']:,}"),
+        ("Suggested Min Capital", f"${suggested_capital:,.0f}"),
+        ("Win Rate", f"{m['win_rate']:.1%}"),
+        ("Profitable Trades", f"{m['wins']:,}"),
+        ("Months Profitable", f"{m['months_profitable']} / {m['total_months']}"),
+        ("Total Net Profit", f"${m['total_pnl']:,.0f}"),
+        ("Max Drawdown", f"${m['max_dd']:,.0f}"),
+        ("Profit Factor", f"{m['profit_factor']:.2f}" if m["profit_factor"] != float("inf") else "∞"),
+    ]
+    rows_html = "".join(
+        f'<div class="summary-row"><span class="summary-key">{k}</span><span class="summary-val">{v}</span></div>'
+        for k, v in summary_items
+    )
+    st.markdown(f'<div class="summary-card"><h4 style="color:#fff;margin:0 0 12px 0;">Summary Statistics</h4>{rows_html}</div>', unsafe_allow_html=True)
+
+# ---------------------------------------------------------------------------
+# Monthly Returns Table
+# ---------------------------------------------------------------------------
+st.markdown("<br>", unsafe_allow_html=True)
+st.markdown("#### Monthly Returns")
+pivot = monthly_returns_table(combined)
+st.markdown(render_monthly_html(pivot), unsafe_allow_html=True)
