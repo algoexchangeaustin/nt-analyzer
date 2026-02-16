@@ -378,7 +378,10 @@ with chart_col:
         x=m["exit_times"],
         y=cum_pct,
         fill="tozeroy",
-        fillcolor="rgba(0,200,83,0.15)",
+        fillgradient=dict(
+            type="vertical",
+            colorscale=[[0, "rgba(0,200,83,0)"], [1, "rgba(0,200,83,0.35)"]],
+        ),
         line=dict(color="#00c853", width=2),
         name="Combined",
         customdata=m["cum_series"],
@@ -406,7 +409,10 @@ with chart_col:
         x=m["exit_times"],
         y=m["dd_pct_series"],
         fill="tozeroy",
-        fillcolor="rgba(255,82,82,0.18)",
+        fillgradient=dict(
+            type="vertical",
+            colorscale=[[0, "rgba(255,82,82,0.35)"], [1, "rgba(255,82,82,0)"]],
+        ),
         line=dict(color="#ff5252", width=1.5),
         name="Drawdown",
         customdata=m["dd_series"],
