@@ -347,7 +347,7 @@ st.markdown("#### Monthly Returns")
 pivot_dollar, pivot_pct = monthly_returns_table(combined, total_capital)
 st.markdown(render_monthly_html(pivot_pct, pivot_dollar), unsafe_allow_html=True)
 
-st.markdown("<br>", unsafe_allow_html=True)
+st.markdown('<br><div style="text-align:center;color:#ff5252;font-size:0.82rem;font-weight:600;letter-spacing:0.5px;">HYPOTHETICAL PERFORMANCE — PAST PERFORMANCE IS NOT INDICATIVE OF FUTURE RESULTS</div>', unsafe_allow_html=True)
 
 # ---------------------------------------------------------------------------
 # Main content: Equity curve + Summary | Drawdown
