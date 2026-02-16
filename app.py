@@ -304,7 +304,26 @@ if combined.empty:
     st.warning("No trades after the selected start date.")
     st.stop()
 
+# Chart options
+st.sidebar.header("Chart Options")
+show_individual = st.sidebar.checkbox("Show individual equity curves", value=False)
+
 m = compute_metrics(combined, starting_capital=total_capital)
+
+# Pre-compute individual strategy curves (date-filtered) for overlay
+individual_curves = {}
+if show_individual and len(selected) > 1:
+    for s in selected:
+        sdf = all_dfs[s].copy()
+        sdf = sdf[sdf["ExitTime"] >= pd.Timestamp(start_date)].sort_values("ExitTime").reset_index(drop=True)
+        if not sdf.empty:
+            cap = capital_map[s]
+            cum = sdf["PnL"].cumsum()
+            individual_curves[s] = {
+                "exit_times": sdf["ExitTime"],
+                "cum_pct": cum / cap * 100,
+                "cum_dollar": cum,
+            }
 
 # ---------------------------------------------------------------------------
 # Metric cards row
@@ -339,15 +358,31 @@ with chart_col:
     # Equity curve (% return with $ in hover)
     cum_pct = m["cum_series"] / total_capital * 100
     fig_eq = go.Figure()
+
+    # Individual strategy curves (behind combined)
+    palette = ["#42a5f5", "#ab47bc", "#ffa726", "#ef5350", "#26c6da", "#d4e157"]
+    for i, (label, curve) in enumerate(individual_curves.items()):
+        color = palette[i % len(palette)]
+        short_name = label.split(" (")[0]
+        fig_eq.add_trace(go.Scatter(
+            x=curve["exit_times"],
+            y=curve["cum_pct"],
+            line=dict(color=color, width=1.5, dash="dot"),
+            name=short_name,
+            customdata=curve["cum_dollar"],
+            hovertemplate=f"{short_name}<br>%{{y:.1f}}%<br>${{%{{customdata:,.0f}}}}<extra></extra>",
+            opacity=0.7,
+        ))
+
     fig_eq.add_trace(go.Scatter(
         x=m["exit_times"],
         y=cum_pct,
         fill="tozeroy",
         fillcolor="rgba(0,200,83,0.15)",
         line=dict(color="#00c853", width=2),
-        name="Equity",
+        name="Combined",
         customdata=m["cum_series"],
-        hovertemplate="%{y:.1f}%<br>$%{customdata:,.0f}<extra></extra>",
+        hovertemplate="Combined<br>%{y:.1f}%<br>$%{customdata:,.0f}<extra></extra>",
     ))
     fig_eq.update_layout(
         title="Equity Curve",
@@ -360,6 +395,8 @@ with chart_col:
         margin=dict(l=60, r=20, t=45, b=30),
         yaxis=dict(ticksuffix="%", gridcolor="#1e1e2f"),
         xaxis=dict(gridcolor="#1e1e2f"),
+        showlegend=bool(individual_curves),
+        legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(size=11)),
     )
     st.plotly_chart(fig_eq, use_container_width=True)
 
