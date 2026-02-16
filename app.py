@@ -321,6 +321,13 @@ cards = [
 for col, (label, value, color, tip) in zip(cols, cards):
     col.markdown(metric_card(label, value, color, tooltip=tip), unsafe_allow_html=True)
 
+# ---------------------------------------------------------------------------
+# Monthly Returns Table
+# ---------------------------------------------------------------------------
+st.markdown("#### Monthly Returns")
+pivot_dollar, pivot_pct = monthly_returns_table(combined, total_capital)
+st.markdown(render_monthly_html(pivot_pct, pivot_dollar), unsafe_allow_html=True)
+
 st.markdown("<br>", unsafe_allow_html=True)
 
 # ---------------------------------------------------------------------------
@@ -401,11 +408,3 @@ with summary_col:
         for k, v in summary_items
     )
     st.markdown(f'<div class="summary-card"><h4 style="color:#fff;margin:0 0 12px 0;">Summary Statistics</h4>{rows_html}</div>', unsafe_allow_html=True)
-
-# ---------------------------------------------------------------------------
-# Monthly Returns Table
-# ---------------------------------------------------------------------------
-st.markdown("<br>", unsafe_allow_html=True)
-st.markdown("#### Monthly Returns")
-pivot_dollar, pivot_pct = monthly_returns_table(combined, total_capital)
-st.markdown(render_monthly_html(pivot_pct, pivot_dollar), unsafe_allow_html=True)
