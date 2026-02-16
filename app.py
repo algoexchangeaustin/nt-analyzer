@@ -288,6 +288,22 @@ combined = pd.concat([all_dfs[s] for s in selected], ignore_index=True)
 combined = combined.sort_values("ExitTime").reset_index(drop=True)
 total_capital = sum(capital_map[s] for s in selected)
 
+# Start date filter
+st.sidebar.header("Date Filter")
+min_date = combined["ExitTime"].min().date()
+max_date = combined["ExitTime"].max().date()
+start_date = st.sidebar.date_input(
+    "Performance start date",
+    value=min_date,
+    min_value=min_date,
+    max_value=max_date,
+)
+combined = combined[combined["ExitTime"] >= pd.Timestamp(start_date)].reset_index(drop=True)
+
+if combined.empty:
+    st.warning("No trades after the selected start date.")
+    st.stop()
+
 m = compute_metrics(combined, starting_capital=total_capital)
 
 # ---------------------------------------------------------------------------
