@@ -380,7 +380,8 @@ with chart_col:
         fill="tozeroy",
         fillgradient=dict(
             type="vertical",
-            colorscale=[[0, "rgba(0,200,83,0)"], [1, "rgba(0,200,83,0.35)"]],
+            colorscale=[[0, "rgba(0,200,83,0)"], [0.6, "rgba(0,200,83,0.25)"], [1, "rgba(0,200,83,0.6)"]],
+            maxratio=1,
         ),
         line=dict(color="#00c853", width=2),
         name="Combined",
@@ -411,7 +412,8 @@ with chart_col:
         fill="tozeroy",
         fillgradient=dict(
             type="vertical",
-            colorscale=[[0, "rgba(255,82,82,0.35)"], [1, "rgba(255,82,82,0)"]],
+            colorscale=[[0, "rgba(255,82,82,0.6)"], [0.4, "rgba(255,82,82,0.25)"], [1, "rgba(255,82,82,0)"]],
+            maxratio=1,
         ),
         line=dict(color="#ff5252", width=1.5),
         name="Drawdown",
