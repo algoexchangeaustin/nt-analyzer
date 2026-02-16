@@ -184,8 +184,8 @@ def compute_metrics(df, starting_capital=100_000):
     }
 
 
-def monthly_returns_table(df):
-    """Build a pivot DataFrame of monthly PnL: rows=year, cols=month."""
+def monthly_returns_table(df, starting_capital):
+    """Build a pivot DataFrame of monthly returns as % of starting capital."""
     trades = df.sort_values("ExitTime").copy()
     trades["Year"] = trades["ExitTime"].dt.year
     trades["Month"] = trades["ExitTime"].dt.month
@@ -196,24 +196,28 @@ def monthly_returns_table(df):
             pivot[m] = 0.0
     pivot = pivot[sorted(pivot.columns)]
     pivot["YTD"] = pivot.sum(axis=1)
-    return pivot
+    # Convert to % of starting capital
+    pivot_pct = pivot / starting_capital * 100
+    return pivot, pivot_pct
 
 
-def render_monthly_html(pivot):
-    """Convert monthly returns pivot to a styled HTML table."""
+def render_monthly_html(pivot_pct, pivot_dollar):
+    """Convert monthly returns pivot to a styled HTML table with % and $ tooltip."""
     month_names = [calendar.month_abbr[m].upper() for m in range(1, 13)] + ["YTD"]
     header = "<tr><th>YEAR</th>" + "".join(f"<th>{m}</th>" for m in month_names) + "</tr>"
     rows = []
-    for year, row in pivot.iterrows():
+    for year in pivot_pct.index:
+        pct_row = pivot_pct.loc[year]
+        dlr_row = pivot_dollar.loc[year]
         cells = f'<td class="year-cell">{year}</td>'
-        for col in row:
-            if col > 0:
+        for pct_val, dlr_val in zip(pct_row, dlr_row):
+            if pct_val > 0:
                 cls = "pos"
-            elif col < 0:
+            elif pct_val < 0:
                 cls = "neg"
             else:
                 cls = "zero"
-            cells += f'<td class="{cls}">${col:,.0f}</td>'
+            cells += f'<td class="{cls}" title="${dlr_val:,.0f}">{pct_val:+.1f}%</td>'
         rows.append(f"<tr>{cells}</tr>")
     return f'<table class="monthly-table">{header}{"".join(rows)}</table>'
 
@@ -309,26 +313,29 @@ st.markdown("<br>", unsafe_allow_html=True)
 chart_col, summary_col = st.columns([3, 1])
 
 with chart_col:
-    # Equity curve
+    # Equity curve (% return with $ in hover)
+    cum_pct = m["cum_series"] / total_capital * 100
     fig_eq = go.Figure()
     fig_eq.add_trace(go.Scatter(
         x=m["exit_times"],
-        y=m["cum_series"],
+        y=cum_pct,
         fill="tozeroy",
         fillcolor="rgba(0,200,83,0.15)",
         line=dict(color="#00c853", width=2),
         name="Equity",
+        customdata=m["cum_series"],
+        hovertemplate="%{y:.1f}%<br>$%{customdata:,.0f}<extra></extra>",
     ))
     fig_eq.update_layout(
         title="Equity Curve",
         template="plotly_dark",
         paper_bgcolor="#0e0e1a",
         plot_bgcolor="#0e0e1a",
-        yaxis_title="Cumulative P&L ($)",
+        yaxis_title="Return (%)",
         xaxis_title="",
         height=370,
         margin=dict(l=60, r=20, t=45, b=30),
-        yaxis=dict(tickformat="$,.0f", gridcolor="#1e1e2f"),
+        yaxis=dict(ticksuffix="%", gridcolor="#1e1e2f"),
         xaxis=dict(gridcolor="#1e1e2f"),
     )
     st.plotly_chart(fig_eq, use_container_width=True)
@@ -361,13 +368,15 @@ with chart_col:
 
 with summary_col:
     suggested_capital = total_capital + abs(m["max_dd"]) * 2
+    total_return_pct = m["total_pnl"] / total_capital * 100
     summary_items = [
         ("Number of Trades", f"{m['n_trades']:,}"),
+        ("Initial Capital", f"${total_capital:,.0f}"),
         ("Suggested Min Capital", f"${suggested_capital:,.0f}"),
         ("Win Rate", f"{m['win_rate']:.1%}"),
         ("Profitable Trades", f"{m['wins']:,}"),
         ("Months Profitable", f"{m['months_profitable']} / {m['total_months']}"),
-        ("Total Net Profit", f"${m['total_pnl']:,.0f}"),
+        ("Total Net Profit", f"{total_return_pct:+.1f}% (${m['total_pnl']:,.0f})"),
         ("Max Drawdown", f"{m['max_dd_pct']:.1f}% (${m['max_dd']:,.0f})"),
         ("Profit Factor", f"{m['profit_factor']:.2f}" if m["profit_factor"] != float("inf") else "∞"),
     ]
@@ -382,5 +391,5 @@ with summary_col:
 # ---------------------------------------------------------------------------
 st.markdown("<br>", unsafe_allow_html=True)
 st.markdown("#### Monthly Returns")
-pivot = monthly_returns_table(combined)
-st.markdown(render_monthly_html(pivot), unsafe_allow_html=True)
+pivot_dollar, pivot_pct = monthly_returns_table(combined, total_capital)
+st.markdown(render_monthly_html(pivot_pct, pivot_dollar), unsafe_allow_html=True)
