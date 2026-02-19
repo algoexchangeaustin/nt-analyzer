@@ -51,6 +51,11 @@
         <input id="initialCapitalInput" type="number" min="1" step="100" value="10000" />
         <label for="startDateInput">Start Date</label>
         <input id="startDateInput" type="date" />
+        <label for="equityModeSelect">Mode</label>
+        <select id="equityModeSelect">
+          <option value="reset_each_year">Reset Initial Each Year</option>
+          <option value="compounded_cagr">Show Compounded CAGR</option>
+        </select>
         <button id="applySizingBtn" type="button">Apply</button>
       </section>
 
@@ -137,6 +142,33 @@
             <div><dt>Profit Factor</dt><dd id="sumProfitFactor">-</dd></div>
           </dl>
         </aside>
+      </section>
+
+      <section class="panel periodical-panel is-collapsed" id="periodicalPanel">
+        <div class="collapsible-header">
+          <h2>Periodical Returns</h2>
+          <button id="togglePeriodicalBtn" type="button" aria-expanded="false" aria-controls="periodicalPanelBody">Expand</button>
+        </div>
+        <div id="periodicalPanelBody">
+        <div class="top-stats-source periodical-controls">
+          <label for="periodReturnsGranularity">View</label>
+          <select id="periodReturnsGranularity">
+            <option value="monthly">Monthly P/L ($)</option>
+            <option value="annual">Annual P/L ($)</option>
+          </select>
+        </div>
+        <div class="table-wrap">
+          <table id="periodReturnsTable">
+            <thead>
+              <tr>
+                <th>Period</th>
+                <th>P/L ($)</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        </div>
       </section>
 
       <section class="panel">

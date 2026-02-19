@@ -134,6 +134,31 @@ main {
   cursor: pointer;
 }
 
+.periodical-controls {
+  margin-bottom: 8px;
+}
+
+.collapsible-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.collapsible-header button {
+  background: rgba(18, 25, 49, 0.85);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.periodical-panel.is-collapsed #periodicalPanelBody {
+  display: none;
+}
+
 .blend-strategy-picker {
   display: inline-flex;
   align-items: center;

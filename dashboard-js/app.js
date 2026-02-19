@@ -40,6 +40,7 @@ let currentAssetFilter = "both";
 let currentStrategyId = "mil_150k_prop";
 let currentStartDateIso = "";
 let currentBlendStrategyIds = BACKTEST_STRATEGIES.map((s) => s.id);
+let currentEquityMode = "reset_each_year";
 
 function parseCsv(text) {
   const lines = text.trim().split(/\r?\n/);
@@ -220,6 +221,22 @@ function computeDisplayRateOfReturn(periodStart, periodEnd, startEquity, endEqui
   return { label: "Annualized Return (Compounded)", valuePct: annualizedPct };
 }
 
+function computeAverageAnnualReturnBasedOnInitial(tradeLog, startingEquity) {
+  if (!Number.isFinite(startingEquity) || startingEquity <= 0) return NaN;
+  const pnlByYear = new Map();
+  (Array.isArray(tradeLog) ? tradeLog : []).forEach((trade) => {
+    const date = String(trade?.date || "");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return;
+    const year = date.slice(0, 4);
+    const pnl = toNumber(trade?.pnlUsd);
+    if (!Number.isFinite(pnl)) return;
+    pnlByYear.set(year, (pnlByYear.get(year) || 0) + pnl);
+  });
+  const yearlyReturns = [...pnlByYear.values()].map((yearPnl) => (yearPnl / startingEquity) * 100);
+  if (!yearlyReturns.length) return NaN;
+  return yearlyReturns.reduce((acc, v) => acc + v, 0) / yearlyReturns.length;
+}
+
 function computeScaledTradeFromRow(row, pnlColumn, targetBetSize) {
   const ntProfit = toNumber(row.Profit);
   if (Number.isFinite(ntProfit)) {
@@ -303,7 +320,8 @@ function computeBacktestMetrics(
   pnlColumn,
   startingEquity = DEFAULT_STARTING_EQUITY,
   targetBetSize = DEFAULT_BET_SIZE,
-  startDateIso = ""
+  startDateIso = "",
+  resetEachYear = true
 ) {
   const { endDate: windowEnd } = getPerformanceWindow();
   const datasetStartIso = firstValidDateIso(rows) || PERFORMANCE_START_ISO;
@@ -328,6 +346,7 @@ function computeBacktestMetrics(
   let maxDrawdownPct = 0;
   let peakEquityForDd = startingEquity;
   let peakDateForDd = datasetStartIso;
+  let runningEquityCumulative = startingEquity;
   let maxDdStartDate = "";
   let maxDdEndDate = "";
   let maxDdDurationDays = NaN;
@@ -336,6 +355,7 @@ function computeBacktestMetrics(
   let grossProfit = 0;
   let grossLossAbs = 0;
   const equity = [];
+  const equityCumulative = [];
   const labels = [];
   const drawdownPctSeries = [];
   const monthlyReturns = [];
@@ -344,8 +364,20 @@ function computeBacktestMetrics(
   let currentMonth = "";
   let monthStartEquity = startingEquity;
   let monthPnl = 0;
+  let currentCalendarYear = "";
 
   bounded.forEach((row, idx) => {
+    const rowIsoDate = extractIsoDate(row);
+    const rowYear = /^\d{4}-\d{2}-\d{2}$/.test(rowIsoDate) ? rowIsoDate.slice(0, 4) : "";
+    if (resetEachYear && rowYear && currentCalendarYear && rowYear !== currentCalendarYear) {
+      // Reset annual equity baseline to the configured initial capital.
+      runningEquity = startingEquity;
+      maxEquity = startingEquity;
+      peakEquityForDd = startingEquity;
+      peakDateForDd = `${rowYear}-01-01`;
+    }
+    if (rowYear) currentCalendarYear = rowYear;
+
     const scaledTrade = computeScaledTradeFromRow(row, pnlColumn, targetBetSize);
     const pnl = scaledTrade.pnlUsd;
     if (!Number.isFinite(pnl)) return;
@@ -372,8 +404,8 @@ function computeBacktestMetrics(
 
     monthPnl += pnl;
     runningEquity += pnl;
+    runningEquityCumulative += pnl;
     maxEquity = Math.max(maxEquity, runningEquity);
-    const rowIsoDate = extractIsoDate(row);
     if (runningEquity >= peakEquityForDd) {
       peakEquityForDd = runningEquity;
       peakDateForDd = rowIsoDate || peakDateForDd;
@@ -400,6 +432,7 @@ function computeBacktestMetrics(
 
     labels.push(rowDateIso(row) || `T${idx + 1}`);
     equity.push(runningEquity);
+    equityCumulative.push(runningEquityCumulative);
     drawdownPctSeries.push(drawdownPct);
   });
 
@@ -463,13 +496,15 @@ function computeBacktestMetrics(
     endingEquity,
     cagrPct,
     equity,
+    equityCumulative,
     labels,
     drawdownPctSeries,
     monthlyReturns,
     tradeLog,
     addTriggerPattern,
     periodStart: bounded[0] ? extractIsoDate(bounded[0]) : windowStartIso,
-    periodEnd: bounded[bounded.length - 1] ? extractIsoDate(bounded[bounded.length - 1]) : windowEndIso
+    periodEnd: bounded[bounded.length - 1] ? extractIsoDate(bounded[bounded.length - 1]) : windowEndIso,
+    resetEachYear
   };
 }
 
@@ -498,7 +533,8 @@ function computeBacktestsFromDatasets(
   startingEquity,
   targetBetSize,
   startDateIso = "",
-  blendStrategyIds = []
+  blendStrategyIds = [],
+  resetEachYear = true
 ) {
   const assetFilter = String(currentAssetFilter || "both").toLowerCase();
   const filterRows = (rows) => {
@@ -517,7 +553,8 @@ function computeBacktestsFromDatasets(
       dataset.pnlColumn,
       startingEquity,
       targetBetSize,
-      startDateIso
+      startDateIso,
+      resetEachYear
     );
     return { ...metrics, id: dataset.id };
   });
@@ -537,7 +574,8 @@ function computeBacktestsFromDatasets(
     "Profit",
     startingEquity,
     targetBetSize,
-    startDateIso
+    startDateIso,
+    resetEachYear
   );
 
   return [...singleStrategyMetrics, { ...blendedMetrics, id: "blend_selected" }];
@@ -557,12 +595,27 @@ function renderTopKpis(strategy) {
   const maxDrawdownText = Number.isFinite(strategy.maxDrawdownPct)
     ? `-${fmtPercent(strategy.maxDrawdownPct, 1)}`
     : "-";
-  const returnMetric = computeDisplayRateOfReturn(
-    strategy.periodStart,
-    strategy.periodEnd,
-    strategy.startingEquity,
-    strategy.endingEquity
-  );
+  const returnMetric = strategy.resetEachYear
+    ? computeDisplayRateOfReturn(
+      strategy.periodStart,
+      strategy.periodEnd,
+      strategy.startingEquity,
+      strategy.endingEquity
+    )
+    : {
+      label: "Compounded CAGR",
+      valuePct: computeCagr(
+        strategy.periodStart,
+        strategy.periodEnd,
+        strategy.endingEquity,
+        strategy.startingEquity
+      )
+    };
+  if (strategy.resetEachYear && returnMetric.label === "Annualized Return (Compounded)") {
+    returnMetric.label = "Annualized Return (Based on Initial)";
+    const avgAnnualReturnPct = computeAverageAnnualReturnBasedOnInitial(strategy.tradeLog, strategy.startingEquity);
+    if (Number.isFinite(avgAnnualReturnPct)) returnMetric.valuePct = avgAnnualReturnPct;
+  }
   const returnLabelEl = document.getElementById("rateOfReturnLabel");
 
   if (returnLabelEl) returnLabelEl.textContent = returnMetric.label;
@@ -1090,8 +1143,41 @@ function renderTradeLog(strategy) {
   }
 }
 
+function renderPeriodicalReturns(strategy) {
+  const tbody = document.querySelector("#periodReturnsTable tbody");
+  const granularitySelect = document.getElementById("periodReturnsGranularity");
+  if (!tbody) return;
+  tbody.innerHTML = "";
+  const granularity = String(granularitySelect?.value || "monthly");
+  const bucketMap = new Map();
+  (Array.isArray(strategy?.tradeLog) ? strategy.tradeLog : []).forEach((trade) => {
+    const date = String(trade?.date || "");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return;
+    const key = granularity === "annual" ? date.slice(0, 4) : date.slice(0, 7);
+    const pnl = toNumber(trade?.pnlUsd);
+    if (!Number.isFinite(pnl)) return;
+    bucketMap.set(key, (bucketMap.get(key) || 0) + pnl);
+  });
+
+  const rows = [...bucketMap.entries()].sort((a, b) => String(b[0]).localeCompare(String(a[0])));
+  rows.forEach(([period, pnl]) => {
+    const tr = document.createElement("tr");
+    const periodTd = document.createElement("td");
+    periodTd.textContent = period;
+    const pnlTd = document.createElement("td");
+    pnlTd.textContent = fmtCurrency(pnl);
+    pnlTd.className = pnl >= 0 ? "positive" : "negative";
+    tr.appendChild(periodTd);
+    tr.appendChild(pnlTd);
+    tbody.appendChild(tr);
+  });
+}
+
 function drawEquityChart(strategy) {
   const ctx = document.getElementById("equityChart");
+  const equitySeries = Array.isArray(strategy.equityCumulative) && strategy.equityCumulative.length
+    ? strategy.equityCumulative
+    : strategy.equity;
 
   equityChartRef?.destroy();
   equityChartRef = new Chart(ctx, {
@@ -1101,7 +1187,7 @@ function drawEquityChart(strategy) {
       datasets: [
         {
           label: strategy.label,
-          data: strategy.equity,
+          data: equitySeries,
           borderColor: "#26d07c",
           backgroundColor: (context) => {
             const chart = context.chart;
@@ -1330,11 +1416,13 @@ async function init() {
     const assetFilterSelect = document.getElementById("assetFilterSelect");
     const initialCapitalInput = document.getElementById("initialCapitalInput");
     const startDateInput = document.getElementById("startDateInput");
+    const equityModeSelect = document.getElementById("equityModeSelect");
     const applySizingBtn = document.getElementById("applySizingBtn");
     if (strategySelect) strategySelect.value = currentStrategyId;
     if (assetFilterSelect) assetFilterSelect.value = currentAssetFilter;
     if (initialCapitalInput) initialCapitalInput.value = String(currentInitialCapital);
     if (startDateInput && isIsoDate(currentStartDateIso)) startDateInput.value = currentStartDateIso;
+    if (equityModeSelect) equityModeSelect.value = currentEquityMode;
     blendStrategyCheckboxes.forEach((checkbox) => {
       checkbox.checked = currentBlendStrategyIds.includes(checkbox.value);
     });
@@ -1354,6 +1442,7 @@ async function init() {
       renderMonthlyTable(selectedSource);
       renderSummaryPanel(selectedSource);
       drawEquityChart(selectedSource);
+      renderPeriodicalReturns(selectedSource);
       renderTradeLog(selectedSource);
     };
 
@@ -1361,6 +1450,7 @@ async function init() {
       const nextInitial = toNumber(initialCapitalInput?.value);
       const nextAssetFilter = String(assetFilterSelect?.value || "both").toLowerCase();
       const nextStartDate = String(startDateInput?.value || "").trim();
+      const nextEquityMode = String(equityModeSelect?.value || "reset_each_year");
       let nextBlendIds = blendStrategyCheckboxes
         .filter((checkbox) => checkbox.checked)
         .map((checkbox) => checkbox.value);
@@ -1368,6 +1458,9 @@ async function init() {
       currentAssetFilter = ["both", "mnq"].includes(nextAssetFilter) ? nextAssetFilter : "both";
       currentStrategyId = String(strategySelect?.value || backtestDatasets[0]?.id || currentStrategyId);
       currentStartDateIso = isIsoDate(nextStartDate) ? nextStartDate : "";
+      currentEquityMode = ["reset_each_year", "compounded_cagr"].includes(nextEquityMode)
+        ? nextEquityMode
+        : "reset_each_year";
       const availableBlendIds = backtestDatasets.map((dataset) => dataset.id);
       nextBlendIds = nextBlendIds.filter((id) => availableBlendIds.includes(id));
       if (!nextBlendIds.length) nextBlendIds = [...availableBlendIds];
@@ -1380,7 +1473,8 @@ async function init() {
         currentInitialCapital,
         currentBetSize,
         currentStartDateIso,
-        currentBlendStrategyIds
+        currentBlendStrategyIds,
+        currentEquityMode === "reset_each_year"
       );
       const validStrategyIds = backtests.map((d) => d.id);
       if (!validStrategyIds.includes(currentStrategyId)) currentStrategyId = validStrategyIds[0];
@@ -1393,7 +1487,8 @@ async function init() {
             currentInitialCapital,
             currentBetSize,
             currentStartDateIso,
-            currentBlendStrategyIds
+            currentBlendStrategyIds,
+            currentEquityMode === "reset_each_year"
           );
         }
       }
@@ -1401,6 +1496,7 @@ async function init() {
       if (strategySelect) strategySelect.value = currentStrategyId;
       if (initialCapitalInput) initialCapitalInput.value = String(Math.round(currentInitialCapital * 100) / 100);
       if (startDateInput && isIsoDate(currentStartDateIso)) startDateInput.value = currentStartDateIso;
+      if (equityModeSelect) equityModeSelect.value = currentEquityMode;
       if (blendStrategyPicker) {
         blendStrategyPicker.style.display = currentStrategyId === "blend_selected" ? "inline-flex" : "none";
       }
@@ -1418,6 +1514,14 @@ async function init() {
       if (event.key === "Enter") applySizing();
     };
     if (startDateInput) startDateInput.onchange = applySizing;
+    if (equityModeSelect) equityModeSelect.onchange = applySizing;
+    const periodReturnsGranularity = document.getElementById("periodReturnsGranularity");
+    if (periodReturnsGranularity) {
+      periodReturnsGranularity.onchange = () => {
+        const selectedSource = getSelectedSource();
+        if (selectedSource) renderPeriodicalReturns(selectedSource);
+      };
+    }
     blendStrategyCheckboxes.forEach((checkbox) => {
       checkbox.onchange = () => {
         if (strategySelect) strategySelect.value = "blend_selected";
@@ -1436,8 +1540,24 @@ async function init() {
         renderMonthlyTable(selectedSource);
         renderSummaryPanel(selectedSource);
         drawEquityChart(selectedSource);
+        renderPeriodicalReturns(selectedSource);
         renderTradeLog(selectedSource);
       };
+    }
+
+    const periodicalPanel = document.getElementById("periodicalPanel");
+    const togglePeriodicalBtn = document.getElementById("togglePeriodicalBtn");
+    if (periodicalPanel && togglePeriodicalBtn) {
+      const syncPeriodicalToggle = () => {
+        const collapsed = periodicalPanel.classList.contains("is-collapsed");
+        togglePeriodicalBtn.textContent = collapsed ? "Expand" : "Collapse";
+        togglePeriodicalBtn.setAttribute("aria-expanded", collapsed ? "false" : "true");
+      };
+      togglePeriodicalBtn.onclick = () => {
+        periodicalPanel.classList.toggle("is-collapsed");
+        syncPeriodicalToggle();
+      };
+      syncPeriodicalToggle();
     }
 
     let resizeFrame = null;
