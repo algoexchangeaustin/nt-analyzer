@@ -134,6 +134,15 @@ function rowDateIso(row) {
   return parsed ? toIsoDateString(parsed) : "";
 }
 
+function formatTradeTime(rawValue) {
+  const parsed = parseUtcTimestamp(rawValue);
+  if (!parsed) return String(rawValue || "-");
+  const isoDate = toIsoDateString(parsed);
+  const hh = String(parsed.getHours()).padStart(2, "0");
+  const mm = String(parsed.getMinutes()).padStart(2, "0");
+  return `${isoDate} ${hh}:${mm}`;
+}
+
 function firstValidDateIso(rows) {
   const dates = (Array.isArray(rows) ? rows : [])
     .map((row) => rowDateIso(row))
@@ -246,7 +255,8 @@ function computeScaledTradeFromRow(row, pnlColumn, targetBetSize) {
     return {
       pnlUsd: ntProfit,
       totalStakeUsd: targetBetSize * safeQty,
-      entryPrice
+      entryPrice,
+      qtyTraded: safeQty
     };
   }
 
@@ -310,7 +320,8 @@ function computeScaledTradeFromRow(row, pnlColumn, targetBetSize) {
   return {
     pnlUsd: scaledPnl,
     totalStakeUsd: targetTotalStake,
-    entryPrice: weightedStakeSum > 0 ? (weightedPriceSum / weightedStakeSum) : baseEntry
+    entryPrice: weightedStakeSum > 0 ? (weightedPriceSum / weightedStakeSum) : baseEntry,
+    qtyTraded: targetBetSize > 0 ? (targetTotalStake / targetBetSize) : NaN
   };
 }
 
@@ -468,8 +479,11 @@ function computeBacktestMetrics(
 
       return {
         date: rowDateIso(row),
+        entryTime: formatTradeTime(row["Entry time"] || row.entry_time_utc),
+        exitTime: formatTradeTime(row["Exit time"] || row.market_end_time_utc || row.entry_time_utc),
         market: formatSymbol(row),
         direction: signal || "-",
+        qtyTraded: scaledTrade.qtyTraded,
         betSizeUsd: scaledTrade.totalStakeUsd,
         entryPrice: scaledTrade.entryPrice,
         result,
@@ -936,6 +950,8 @@ function stitchBacktestWithMcBackfill(strategy, mcSeries, sourceLabel) {
 
     combinedTradeEvents.push({
       date: dayIso,
+      entryTime: "-",
+      exitTime: "-",
       market: `MC Backfill (${sourceLabel})`,
       direction,
       betSizeUsd,
@@ -1100,9 +1116,11 @@ function renderTradeLog(strategy) {
     const tr = document.createElement("tr");
     const cells = [
       trade.date || "-",
+      trade.entryTime || "-",
       trade.market || "-",
       trade.direction || "-",
-      fmtCurrency(trade.betSizeUsd),
+      Number.isFinite(trade.qtyTraded) ? String(Math.round(trade.qtyTraded * 100) / 100) : "-",
+      trade.exitTime || "-",
       Number.isFinite(trade.entryPrice) ? trade.entryPrice.toFixed(3) : "-",
       trade.result || "-",
       fmtCurrency(trade.pnlUsd)
@@ -1110,8 +1128,8 @@ function renderTradeLog(strategy) {
     cells.forEach((value, idx) => {
       const td = document.createElement("td");
       td.textContent = String(value);
-      if (idx === 5) td.className = trade.result === "Win" ? "positive" : trade.result === "Loss" ? "negative" : "";
-      if (idx === 6) td.className = Number.isFinite(trade.pnlUsd)
+      if (idx === 7) td.className = trade.result === "Win" ? "positive" : trade.result === "Loss" ? "negative" : "";
+      if (idx === 8) td.className = Number.isFinite(trade.pnlUsd)
         ? trade.pnlUsd >= 0
           ? "positive"
           : "negative"
