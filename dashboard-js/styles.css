@@ -134,6 +134,38 @@ main {
   cursor: pointer;
 }
 
+.blend-strategy-picker {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(18, 25, 49, 0.85);
+}
+
+.blend-strategy-picker .blend-picker-label {
+  font-size: 0.74rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.blend-strategy-picker label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text);
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 0.8rem;
+}
+
+.blend-strategy-picker input[type="checkbox"] {
+  width: auto;
+}
+
 .kpi-card {
   background: linear-gradient(180deg, rgba(40, 52, 93, 0.38), rgba(23, 30, 58, 0.62));
   border: 1px solid var(--border);

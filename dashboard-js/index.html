@@ -30,8 +30,14 @@
           <option value="mil_150k_prop">Millennium Algo ($10K)</option>
           <option value="falcon_10k">Falcon Algo ($10K)</option>
           <option value="raptor_10k">Raptor Algo ($10K)</option>
-          <option value="blend_all">Blended Portfolio (All Strategies)</option>
+          <option value="blend_selected">Blended Portfolio (Selected Strategies)</option>
         </select>
+        <div class="blend-strategy-picker" id="blendStrategyPicker">
+          <span class="blend-picker-label">Blend Strategies</span>
+          <label><input type="checkbox" name="blendStrategy" value="mil_150k_prop" checked /> Millennium</label>
+          <label><input type="checkbox" name="blendStrategy" value="falcon_10k" checked /> Falcon</label>
+          <label><input type="checkbox" name="blendStrategy" value="raptor_10k" checked /> Raptor</label>
+        </div>
         <label for="topStatsSourceSelect">Top Stats Source</label>
         <select id="topStatsSourceSelect">
           <option value="backtest">Ninjatrader Backtest on Presets</option>

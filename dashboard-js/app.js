@@ -39,6 +39,7 @@ let currentBetSize = DEFAULT_BET_SIZE;
 let currentAssetFilter = "both";
 let currentStrategyId = "mil_150k_prop";
 let currentStartDateIso = "";
+let currentBlendStrategyIds = BACKTEST_STRATEGIES.map((s) => s.id);
 
 function parseCsv(text) {
   const lines = text.trim().split(/\r?\n/);
@@ -492,7 +493,13 @@ async function loadBacktestDatasets() {
   return loaded.filter(Boolean);
 }
 
-function computeBacktestsFromDatasets(backtestDatasets, startingEquity, targetBetSize, startDateIso = "") {
+function computeBacktestsFromDatasets(
+  backtestDatasets,
+  startingEquity,
+  targetBetSize,
+  startDateIso = "",
+  blendStrategyIds = []
+) {
   const assetFilter = String(currentAssetFilter || "both").toLowerCase();
   const filterRows = (rows) => {
     if (assetFilter === "both") return rows;
@@ -515,10 +522,17 @@ function computeBacktestsFromDatasets(backtestDatasets, startingEquity, targetBe
     return { ...metrics, id: dataset.id };
   });
 
+  const availableBlendIds = backtestDatasets.map((d) => d.id);
+  const blendSet = new Set(
+    (Array.isArray(blendStrategyIds) ? blendStrategyIds : [])
+      .filter((id) => availableBlendIds.includes(id))
+  );
+  if (!blendSet.size) availableBlendIds.forEach((id) => blendSet.add(id));
   const blendedRows = backtestDatasets
+    .filter((dataset) => blendSet.has(dataset.id))
     .flatMap((dataset) => filterRows(dataset.rows).map((row) => ({ ...row, __strategyLabel: dataset.label })));
   const blendedMetrics = computeBacktestMetrics(
-    "Blended Portfolio (All Strategies)",
+    "Blended Portfolio (Selected Strategies)",
     blendedRows,
     "Profit",
     startingEquity,
@@ -526,7 +540,7 @@ function computeBacktestsFromDatasets(backtestDatasets, startingEquity, targetBe
     startDateIso
   );
 
-  return [...singleStrategyMetrics, { ...blendedMetrics, id: "blend_all" }];
+  return [...singleStrategyMetrics, { ...blendedMetrics, id: "blend_selected" }];
 }
 
 function renderDatasetWindow(metricsRows) {
@@ -1309,6 +1323,10 @@ async function init() {
 
     const topStatsSelect = document.getElementById("topStatsSourceSelect");
     const strategySelect = document.getElementById("strategySelect");
+    const blendStrategyPicker = document.getElementById("blendStrategyPicker");
+    const blendStrategyCheckboxes = Array.from(
+      document.querySelectorAll('input[name="blendStrategy"]')
+    );
     const assetFilterSelect = document.getElementById("assetFilterSelect");
     const initialCapitalInput = document.getElementById("initialCapitalInput");
     const startDateInput = document.getElementById("startDateInput");
@@ -1317,6 +1335,9 @@ async function init() {
     if (assetFilterSelect) assetFilterSelect.value = currentAssetFilter;
     if (initialCapitalInput) initialCapitalInput.value = String(currentInitialCapital);
     if (startDateInput && isIsoDate(currentStartDateIso)) startDateInput.value = currentStartDateIso;
+    blendStrategyCheckboxes.forEach((checkbox) => {
+      checkbox.checked = currentBlendStrategyIds.includes(checkbox.value);
+    });
 
     let active = null;
     let topSources = null;
@@ -1340,24 +1361,49 @@ async function init() {
       const nextInitial = toNumber(initialCapitalInput?.value);
       const nextAssetFilter = String(assetFilterSelect?.value || "both").toLowerCase();
       const nextStartDate = String(startDateInput?.value || "").trim();
+      let nextBlendIds = blendStrategyCheckboxes
+        .filter((checkbox) => checkbox.checked)
+        .map((checkbox) => checkbox.value);
       currentInitialCapital = Number.isFinite(nextInitial) && nextInitial > 0 ? nextInitial : DEFAULT_STARTING_EQUITY;
       currentAssetFilter = ["both", "mnq"].includes(nextAssetFilter) ? nextAssetFilter : "both";
       currentStrategyId = String(strategySelect?.value || backtestDatasets[0]?.id || currentStrategyId);
       currentStartDateIso = isIsoDate(nextStartDate) ? nextStartDate : "";
-      let backtests = computeBacktestsFromDatasets(backtestDatasets, currentInitialCapital, currentBetSize, currentStartDateIso);
+      const availableBlendIds = backtestDatasets.map((dataset) => dataset.id);
+      nextBlendIds = nextBlendIds.filter((id) => availableBlendIds.includes(id));
+      if (!nextBlendIds.length) nextBlendIds = [...availableBlendIds];
+      currentBlendStrategyIds = nextBlendIds;
+      blendStrategyCheckboxes.forEach((checkbox) => {
+        checkbox.checked = currentBlendStrategyIds.includes(checkbox.value);
+      });
+      let backtests = computeBacktestsFromDatasets(
+        backtestDatasets,
+        currentInitialCapital,
+        currentBetSize,
+        currentStartDateIso,
+        currentBlendStrategyIds
+      );
       const validStrategyIds = backtests.map((d) => d.id);
       if (!validStrategyIds.includes(currentStrategyId)) currentStrategyId = validStrategyIds[0];
       if (!currentStartDateIso) {
         const selected = backtests.find((d) => d.id === currentStrategyId) || backtests[0];
         currentStartDateIso = selected?.periodStart || "";
         if (isIsoDate(currentStartDateIso)) {
-          backtests = computeBacktestsFromDatasets(backtestDatasets, currentInitialCapital, currentBetSize, currentStartDateIso);
+          backtests = computeBacktestsFromDatasets(
+            backtestDatasets,
+            currentInitialCapital,
+            currentBetSize,
+            currentStartDateIso,
+            currentBlendStrategyIds
+          );
         }
       }
       if (assetFilterSelect) assetFilterSelect.value = currentAssetFilter;
       if (strategySelect) strategySelect.value = currentStrategyId;
       if (initialCapitalInput) initialCapitalInput.value = String(Math.round(currentInitialCapital * 100) / 100);
       if (startDateInput && isIsoDate(currentStartDateIso)) startDateInput.value = currentStartDateIso;
+      if (blendStrategyPicker) {
+        blendStrategyPicker.style.display = currentStrategyId === "blend_selected" ? "inline-flex" : "none";
+      }
       active = backtests.find((b) => b.id === currentStrategyId) || backtests[0];
       topSources = { backtest: active };
       tradeLogCurrentPage = 1;
@@ -1372,6 +1418,13 @@ async function init() {
       if (event.key === "Enter") applySizing();
     };
     if (startDateInput) startDateInput.onchange = applySizing;
+    blendStrategyCheckboxes.forEach((checkbox) => {
+      checkbox.onchange = () => {
+        if (strategySelect) strategySelect.value = "blend_selected";
+        currentStrategyId = "blend_selected";
+        applySizing();
+      };
+    });
 
     applySizing();
 
