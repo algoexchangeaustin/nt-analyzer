@@ -9,6 +9,8 @@ const BACKTEST_STRATEGIES = [
     id: "mil_150k_prop",
     label: "Millennium Algo ($10K)",
     file: "./reports/mil_150k_prop.csv",
+    format: "tradestation",
+    defaultInstrument: "MNQ",
     pnlColumns: ["Profit", "new_total_pnl_usd", "pnl_usd_100", "base_pnl_usd"]
   },
   {
@@ -43,17 +45,25 @@ let currentBlendStrategyIds = BACKTEST_STRATEGIES.map((s) => s.id);
 let currentEquityMode = "reset_each_year";
 
 function parseCsv(text) {
-  const lines = text.trim().split(/\r?\n/);
-  if (lines.length < 2) return [];
-  const headers = lines[0].split(",");
-  return lines.slice(1).map((line) => {
+  const lines = String(text || "").split(/\r?\n/);
+  const headerIdx = lines.findIndex((line) => {
+    const trimmed = String(line || "").trim();
+    if (!trimmed) return false;
+    if (!trimmed.includes(",")) return false;
+    if (trimmed.toLowerCase() === "tradestation trades list") return false;
+    return true;
+  });
+  if (headerIdx < 0) return [];
+  const headers = lines[headerIdx].split(",").map((h) => String(h || "").trim());
+  return lines.slice(headerIdx + 1).map((line) => {
+    if (!String(line || "").trim()) return null;
     const values = line.split(",");
     const row = {};
     headers.forEach((key, index) => {
-      row[key] = values[index] ?? "";
+      row[key] = String(values[index] ?? "").trim();
     });
     return row;
-  });
+  }).filter(Boolean);
 }
 
 function toNumber(value) {
@@ -134,13 +144,37 @@ function rowDateIso(row) {
   return parsed ? toIsoDateString(parsed) : "";
 }
 
-function formatTradeTime(rawValue) {
+function formatTradeDateTime(rawValue) {
   const parsed = parseUtcTimestamp(rawValue);
   if (!parsed) return String(rawValue || "-");
-  const isoDate = toIsoDateString(parsed);
-  const hh = String(parsed.getHours()).padStart(2, "0");
-  const mm = String(parsed.getMinutes()).padStart(2, "0");
-  return `${isoDate} ${hh}:${mm}`;
+  return parsed.toLocaleString("en-US", {
+    year: "2-digit",
+    month: "numeric",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: false
+  }).replace(",", "");
+}
+
+function formatDescription(row) {
+  const instrument = String(row.Instrument || row.instrument || "").trim().toUpperCase();
+  if (instrument.startsWith("MNQ")) return "MICRO E-MINI NASDAQ 100";
+  if (instrument.startsWith("NQ")) return "E-MINI NASDAQ 100";
+  if (instrument.startsWith("MES")) return "MICRO E-MINI S&P 500";
+  if (instrument.startsWith("ES")) return "E-MINI S&P 500";
+  return instrument || "UNKNOWN";
+}
+
+function computeDrawdownPctFromRow(row, qtyTraded, entryPrice) {
+  const mae = toNumber(row.MAE ?? row.mae);
+  if (!Number.isFinite(mae) || mae <= 0) return NaN;
+  const qty = Number.isFinite(qtyTraded) && qtyTraded > 0 ? qtyTraded : NaN;
+  const px = Number.isFinite(entryPrice) && entryPrice > 0 ? entryPrice : NaN;
+  if (!Number.isFinite(qty) || !Number.isFinite(px)) return NaN;
+  const notional = qty * px;
+  if (!Number.isFinite(notional) || notional <= 0) return NaN;
+  return (mae / notional) * 100;
 }
 
 function firstValidDateIso(rows) {
@@ -153,6 +187,75 @@ function firstValidDateIso(rows) {
 
 function isIsoDate(value) {
   return /^\d{4}-\d{2}-\d{2}$/.test(String(value || ""));
+}
+
+function normalizeTradeStationRows(rows, fallbackInstrument = "MNQ") {
+  const normalized = [];
+  let openTrade = null;
+  let prevCumNet = NaN;
+  const parseCumNet = (row) => toNumber(row["Net Profit - Cum Net Profit"]);
+  const parseTradePnl = (row) => toNumber(row["Shares/Ctrts - Profit/Loss"]);
+
+  const finalizeOpenTrade = () => {
+    if (!openTrade) return;
+    if (!Number.isFinite(toNumber(openTrade.Profit))) return;
+    normalized.push(openTrade);
+    openTrade = null;
+  };
+
+  rows.forEach((row) => {
+    const type = String(row.Type || "").trim();
+    const dateTime = String(row["Date/Time"] || "").trim();
+    const price = toNumber(row.Price);
+    const qtyOrPnl = toNumber(row["Shares/Ctrts - Profit/Loss"]);
+    const cumNet = parseCumNet(row);
+    const isEntry = type === "Buy" || type === "Sell Short";
+    const isExit = type === "Sell" || type === "Buy to Cover";
+
+    if (isEntry) {
+      finalizeOpenTrade();
+      openTrade = {
+        Instrument: fallbackInstrument,
+        "Market pos.": type === "Buy" ? "Long" : "Short",
+        Qty: Number.isFinite(qtyOrPnl) && qtyOrPnl > 0 ? qtyOrPnl : 1,
+        "Entry price": price,
+        "Exit price": price,
+        "Entry time": dateTime,
+        "Exit time": dateTime,
+        Profit: NaN
+      };
+      if (Number.isFinite(cumNet)) prevCumNet = cumNet;
+      return;
+    }
+
+    if (isExit) {
+      let tradePnl = parseTradePnl(row);
+      if (!Number.isFinite(tradePnl) && Number.isFinite(cumNet)) {
+        tradePnl = Number.isFinite(prevCumNet) ? (cumNet - prevCumNet) : cumNet;
+      }
+      if (!openTrade) {
+        openTrade = {
+          Instrument: fallbackInstrument,
+          "Market pos.": type === "Buy to Cover" ? "Short" : "Long",
+          Qty: 1,
+          "Entry price": price,
+          "Exit price": price,
+          "Entry time": dateTime,
+          "Exit time": dateTime,
+          Profit: Number.isFinite(tradePnl) ? tradePnl : NaN
+        };
+      } else {
+        if (Number.isFinite(price)) openTrade["Exit price"] = price;
+        if (dateTime) openTrade["Exit time"] = dateTime;
+        if (Number.isFinite(tradePnl)) openTrade.Profit = tradePnl;
+      }
+      if (Number.isFinite(cumNet)) prevCumNet = cumNet;
+      finalizeOpenTrade();
+    }
+  });
+
+  finalizeOpenTrade();
+  return normalized;
 }
 
 function getPerformanceWindow() {
@@ -479,18 +582,27 @@ function computeBacktestMetrics(
 
       return {
         date: rowDateIso(row),
-        entryTime: formatTradeTime(row["Entry time"] || row.entry_time_utc),
-        exitTime: formatTradeTime(row["Exit time"] || row.market_end_time_utc || row.entry_time_utc),
+        entryTs: parseUtcTimestamp(row["Entry time"] || row.entry_time_utc)?.getTime() || NaN,
+        entryTime: formatTradeDateTime(row["Entry time"] || row.entry_time_utc),
+        exitTime: formatTradeDateTime(row["Exit time"] || row.market_end_time_utc || row.entry_time_utc),
         market: formatSymbol(row),
-        direction: signal || "-",
+        description: formatDescription(row),
+        direction: signal ? signal.toUpperCase() : "-",
         qtyTraded: scaledTrade.qtyTraded,
         betSizeUsd: scaledTrade.totalStakeUsd,
         entryPrice: scaledTrade.entryPrice,
+        exitPrice: toNumber(row["Exit price"] || row.exit_price),
+        drawdownPct: computeDrawdownPctFromRow(row, scaledTrade.qtyTraded, scaledTrade.entryPrice),
         result,
         pnlUsd: pnl
       };
     })
-    .sort((a, b) => String(b.date).localeCompare(String(a.date)));
+    .sort((a, b) => {
+      const aTs = toNumber(a.entryTs);
+      const bTs = toNumber(b.entryTs);
+      if (Number.isFinite(aTs) && Number.isFinite(bTs) && aTs !== bTs) return bTs - aTs;
+      return String(b.date).localeCompare(String(a.date));
+    });
 
   return {
     label,
@@ -526,7 +638,10 @@ async function loadBacktestDatasets() {
   const loaded = await Promise.all(
     BACKTEST_STRATEGIES.map(async (config) => {
       try {
-        const rows = await fetchCsv(config.file);
+        const rawRows = await fetchCsv(config.file);
+        const rows = config.format === "tradestation"
+          ? normalizeTradeStationRows(rawRows, config.defaultInstrument || "MNQ")
+          : rawRows;
         if (!rows.length) return null;
         const headerKeys = Object.keys(rows[0]);
         const pnlColumn = config.pnlColumns.find((key) => headerKeys.includes(key));
@@ -582,11 +697,12 @@ function computeBacktestsFromDatasets(
   const blendedRows = backtestDatasets
     .filter((dataset) => blendSet.has(dataset.id))
     .flatMap((dataset) => filterRows(dataset.rows).map((row) => ({ ...row, __strategyLabel: dataset.label })));
+  const blendedStartingEquity = startingEquity * Math.max(blendSet.size, 1);
   const blendedMetrics = computeBacktestMetrics(
     "Blended Portfolio (Selected Strategies)",
     blendedRows,
     "Profit",
-    startingEquity,
+    blendedStartingEquity,
     targetBetSize,
     startDateIso,
     resetEachYear
@@ -953,9 +1069,13 @@ function stitchBacktestWithMcBackfill(strategy, mcSeries, sourceLabel) {
       entryTime: "-",
       exitTime: "-",
       market: `MC Backfill (${sourceLabel})`,
+      description: "MC BACKFILL",
       direction,
+      qtyTraded: 1,
       betSizeUsd,
       entryPrice,
+      exitPrice: NaN,
+      drawdownPct: NaN,
       result: delta >= 0 ? "Win" : "Loss",
       pnlUsd: delta
     });
@@ -1115,20 +1235,19 @@ function renderTradeLog(strategy) {
   rows.forEach((trade) => {
     const tr = document.createElement("tr");
     const cells = [
-      trade.date || "-",
       trade.entryTime || "-",
       trade.market || "-",
+      trade.description || "-",
       trade.direction || "-",
-      Number.isFinite(trade.qtyTraded) ? String(Math.round(trade.qtyTraded * 100) / 100) : "-",
+      Number.isFinite(trade.qtyTraded) ? String(Math.round(trade.qtyTraded)) : "-",
+      Number.isFinite(trade.entryPrice) ? trade.entryPrice.toFixed(2) : "-",
       trade.exitTime || "-",
-      Number.isFinite(trade.entryPrice) ? trade.entryPrice.toFixed(3) : "-",
-      trade.result || "-",
+      Number.isFinite(trade.exitPrice) ? trade.exitPrice.toFixed(2) : "-",
       fmtCurrency(trade.pnlUsd)
     ];
     cells.forEach((value, idx) => {
       const td = document.createElement("td");
       td.textContent = String(value);
-      if (idx === 7) td.className = trade.result === "Win" ? "positive" : trade.result === "Loss" ? "negative" : "";
       if (idx === 8) td.className = Number.isFinite(trade.pnlUsd)
         ? trade.pnlUsd >= 0
           ? "positive"

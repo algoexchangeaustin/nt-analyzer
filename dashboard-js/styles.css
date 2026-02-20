@@ -714,10 +714,10 @@ tr:hover td {
   /* Keep mobile trade log readable by showing key columns only. */
   #tradeLogTable th:nth-child(3),
   #tradeLogTable td:nth-child(3),
-  #tradeLogTable th:nth-child(4),
-  #tradeLogTable td:nth-child(4),
-  #tradeLogTable th:nth-child(5),
-  #tradeLogTable td:nth-child(5) {
+  #tradeLogTable th:nth-child(6),
+  #tradeLogTable td:nth-child(6),
+  #tradeLogTable th:nth-child(8),
+  #tradeLogTable td:nth-child(8) {
     display: none;
   }
 
